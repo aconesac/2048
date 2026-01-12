@@ -1,1 +1,10 @@
 .qodo
+.venv
+*__pycache__/
+*.pyc
+*.pyo
+*.pyd
+env/
+build/
+develop-eggs/
+dist/       
