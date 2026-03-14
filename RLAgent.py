@@ -1,131 +1,129 @@
-import tensorflow as tf
-from keras.models import Sequential, load_model, clone_model   # type: ignore
-from keras.layers import Dense, InputLayer, Dropout, BatchNormalization  # type: ignore
-from keras.optimizers import Adam  # type: ignore
 import numpy as np
 import random
 from collections import deque
 
+import torch
+import torch.nn as nn
+import torch.optim as optim
+
+from config import (
+    GAMMA, EPSILON_START, EPSILON_MIN, EPSILON_DECAY,
+    LEARNING_RATE, MEMORY_SIZE,
+    HIDDEN_1, HIDDEN_2, LEAKY_RELU_ALPHA, DROPOUT_RATE, GRAD_CLIP_NORM,
+)
+
+
+class DQNNetwork(nn.Module):
+    def __init__(self, state_size: int, action_size: int):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.BatchNorm1d(state_size),
+            nn.Linear(state_size, HIDDEN_1),
+            nn.LeakyReLU(LEAKY_RELU_ALPHA),
+            nn.Dropout(DROPOUT_RATE),
+            nn.Linear(HIDDEN_1, HIDDEN_2),
+            nn.LeakyReLU(LEAKY_RELU_ALPHA),
+            nn.Dropout(DROPOUT_RATE),
+            nn.Linear(HIDDEN_2, action_size),
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.net(x)
+
+
 class DQNAgent:
-    def __init__(self, state_size, action_size, model = None):
+    def __init__(self, state_size: int, action_size: int):
         self.state_size = state_size
         self.action_size = action_size
-        self.memory = deque(maxlen=10000)
-        self.gamma = 0.95    # discount rate
-        self.epsilon = 1.0   # exploration rate
-        self.epsilon_min = 0.01
-        self.epsilon_decay = 0.9995
-        self.learning_rate = 0.0001
-        self.mse = tf.keras.losses.MeanSquaredError()
-        self.optimizer = Adam(learning_rate=self.learning_rate)
-        if model:
-            self.main_model = model
-            print(type(self.main_model))
-            self.target_model = clone_model(model)
-            self.target_model.set_weights(self.main_model.get_weights())
-            print(type(self.target_model))
-        else:
-            self.main_model = self._build_big_model()
-            self.target_model = self._build_big_model()
-            self.target_model.set_weights(self.main_model.get_weights())
+        self.memory = deque(maxlen=MEMORY_SIZE)
 
-    def _build_model(self) -> Sequential:
-        # Neural Net for Deep-Q learning Model
-        model = Sequential()
-        model.add(InputLayer(shape=(self.state_size,)))
-        model.add(Dense(16, activation='relu'))
-        model.add(Dense(8, activation='relu'))
-        model.add(Dense(self.action_size, activation='linear'))
+        self.gamma = GAMMA
+        self.epsilon = EPSILON_START
+        self.epsilon_min = EPSILON_MIN
+        self.epsilon_decay = EPSILON_DECAY
 
-        return model
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    def _build_big_model(self):
-        model = Sequential()
-        model.add(InputLayer(shape=(self.state_size,)))
-        model.add(BatchNormalization())
-        model.add(Dense(256, activation=tf.keras.layers.LeakyReLU(alpha=0.01)))
-        model.add(Dropout(0.1))
-        model.add(Dense(128, activation=tf.keras.layers.LeakyReLU(alpha=0.01)))
-        model.add(Dropout(0.1))
-        model.add(Dense(self.action_size, activation='linear'))
+        self.main_model = DQNNetwork(state_size, action_size).to(self.device)
+        self.target_model = DQNNetwork(state_size, action_size).to(self.device)
+        self.target_model.load_state_dict(self.main_model.state_dict())
+        self.target_model.eval()  # target never backprops
 
-        return model
-        
-    def remember(self, state, action, reward, next_state, done):
-        state = self.preprocess_state(state)
-        next_state = self.preprocess_state(next_state)
-        self.memory.append((state, action, reward, next_state, done))
-        
-    def preprocess_state(self, state):
-        # Convert tile values to log2 representation (except 0)
-        processed_state = np.zeros_like(state, dtype=np.float32)
-        for i in range(state.shape[0]):
-            if state[i] > 0:
-                processed_state[i] = np.log2(state[i])
+        self.optimizer = optim.Adam(self.main_model.parameters(), lr=LEARNING_RATE)
+        self.loss_fn = nn.MSELoss()
 
-        # Normalize dynamically so values stay in [0, 1] even past 2048
-        max_log = processed_state.max()
+    def preprocess_state(self, state: np.ndarray) -> np.ndarray:
+        processed = np.zeros_like(state, dtype=np.float32)
+        mask = state > 0
+        processed[mask] = np.log2(state[mask])
+        max_log = processed.max()
         if max_log > 0:
-            processed_state = processed_state / max_log
+            processed /= max_log
+        return processed
 
-        return processed_state
+    def remember(self, state, action, reward, next_state, done):
+        self.memory.append((
+            self.preprocess_state(state),
+            action,
+            reward,
+            self.preprocess_state(next_state),
+            done,
+        ))
 
-    def act(self, state):
+    def act(self, state: np.ndarray) -> int:
         if np.random.rand() <= self.epsilon:
             return random.randrange(self.action_size)
-        
-        state = self.preprocess_state(state)
-        act_values = self.main_model(np.expand_dims(state, axis=0))
-        return np.argmax(act_values[0])  # returns action
-    
-    def sample_memory(self, batch_size):
-        states, actions, rewards, next_states, dones = [], [], [], [], []
+        tensor = torch.FloatTensor(self.preprocess_state(state)).unsqueeze(0).to(self.device)
+        self.main_model.eval()
+        with torch.no_grad():
+            q_values = self.main_model(tensor)
+        self.main_model.train()
+        return int(q_values.argmax(dim=1).item())
+
+    def sample_memory(self, batch_size: int):
         idx = np.random.choice(len(self.memory), batch_size, replace=False)
-        for i in idx:
-            elem = self.memory[i]
-            state, action, reward, next_state, done = elem
-            states.append(np.asarray(state))
-            actions.append(np.asarray(action))
-            rewards.append(reward)
-            next_states.append(np.array(next_state, copy=False))
-            dones.append(done)
-            
-        states = np.array(states)
-        actions = np.array(actions)
-        rewards = np.array(rewards, dtype=np.float32)
-        next_states = np.array(next_states)
-        dones = np.array(dones, dtype=np.float32)
-        
-        return states, actions, rewards, next_states, dones
+        batch = [self.memory[i] for i in idx]
+        states, actions, rewards, next_states, dones = zip(*batch)
+        return (
+            np.array(states, dtype=np.float32),
+            np.array(actions),
+            np.array(rewards, dtype=np.float32),
+            np.array(next_states, dtype=np.float32),
+            np.array(dones, dtype=np.float32),
+        )
+
+    def train_step(self, states, actions, rewards, next_states, dones) -> float:
+        states_t      = torch.FloatTensor(states).to(self.device)
+        actions_t     = torch.LongTensor(actions).to(self.device)
+        rewards_t     = torch.FloatTensor(rewards).to(self.device)
+        next_states_t = torch.FloatTensor(next_states).to(self.device)
+        dones_t       = torch.FloatTensor(dones).to(self.device)
+
+        with torch.no_grad():
+            max_next_q = self.target_model(next_states_t).max(dim=1).values
+            target_q = rewards_t + (1.0 - dones_t) * self.gamma * max_next_q
+
+        current_q = self.main_model(states_t).gather(1, actions_t.unsqueeze(1)).squeeze(1)
+        loss = self.loss_fn(current_q, target_q)
+
+        self.optimizer.zero_grad()
+        loss.backward()
+        nn.utils.clip_grad_norm_(self.main_model.parameters(), GRAD_CLIP_NORM)
+        self.optimizer.step()
+        return loss.item()
+
+    def target_train(self):
+        self.target_model.load_state_dict(self.main_model.state_dict())
 
     def reduce_epsilon(self):
         if self.epsilon > self.epsilon_min:
             self.epsilon *= self.epsilon_decay
-            
-    @tf.function
-    def train_step(self, states, actions, rewards, next_states, dones):
-        """Perform a training iteration on a batch of data sampled from the experience
-        replay buffer."""
-        # Calculate targets.
-        next_qs = self.target_model(next_states)
-        max_next_qs = tf.reduce_max(next_qs, axis=-1)
-        target = rewards + (1. - dones) * self.gamma * max_next_qs
-        with tf.GradientTape() as tape:
-            qs = self.main_model(states)
-            action_masks = tf.one_hot(actions, self.action_size)
-            masked_qs = tf.reduce_sum(action_masks * qs, axis=-1)
-            loss = self.mse(target, masked_qs)
-        grads = tape.gradient(loss, self.main_model.trainable_variables)
-        grads, _ = tf.clip_by_global_norm(grads, 1.0)
-        self.optimizer.apply_gradients(zip(grads, self.main_model.trainable_variables))
-        return loss
-            
-    def target_train(self):
-        self.target_model.set_weights(self.main_model.get_weights())
-        
-    def load(self, name):
-        self.main_model = load_model(name)
-        self.target_model = load_model(name)
 
-    def save(self, name):
-        self.main_model.save(name)
+    def save(self, path: str):
+        torch.save(self.main_model.state_dict(), path)
+
+    def load(self, path: str):
+        state_dict = torch.load(path, map_location=self.device)
+        self.main_model.load_state_dict(state_dict)
+        self.target_model.load_state_dict(state_dict)
+        self.target_model.eval()

@@ -1,13 +1,10 @@
 import random
 import numpy as np
 
-LAMBDA = 5.0
-# Constants for reward scaling
-MAX_EXPECTED_TILE = 2048  # Highest expected tile value
-INVALID_MOVE_PENALTY = -5.0  # Scaled penalty for invalid moves
-GAME_OVER_PENALTY = -10.0  # Scaled penalty for game over
-MERGE_REWARD_SCALE = 10000  # Scale factor for merge rewards
-NEW_MAX_SCALE = 5.0  # Scale factor for new max tile bonus
+from config import (
+    LAMBDA, MAX_EXPECTED_TILE, INVALID_MOVE_PENALTY,
+    GAME_OVER_PENALTY, MERGE_REWARD_SCALE, NEW_MAX_SCALE
+)
 
 class Game2048:
     def __init__(self):
