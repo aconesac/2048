@@ -1,5 +1,5 @@
 import tensorflow as tf
-from keras.models import Sequential, load_model  # type: ignore
+from keras.models import Sequential, load_model, clone_model   # type: ignore
 from keras.layers import Dense, InputLayer, Dropout, BatchNormalization  # type: ignore
 from keras.optimizers import Adam  # type: ignore
 import numpy as np
@@ -21,11 +21,13 @@ class DQNAgent:
         if model:
             self.main_model = model
             print(type(self.main_model))
-            self.target_model = model
+            self.target_model = clone_model(model)
+            self.target_model.set_weights(self.main_model.get_weights())
             print(type(self.target_model))
         else:
             self.main_model = self._build_big_model()
             self.target_model = self._build_big_model()
+            self.target_model.set_weights(self.main_model.get_weights())
 
     def _build_model(self) -> Sequential:
         # Neural Net for Deep-Q learning Model
@@ -33,7 +35,7 @@ class DQNAgent:
         model.add(InputLayer(shape=(self.state_size,)))
         model.add(Dense(16, activation='relu'))
         model.add(Dense(8, activation='relu'))
-        model.add(Dense(self.action_size, activation='softmax'))
+        model.add(Dense(self.action_size, activation='linear'))
 
         return model
 
@@ -41,16 +43,12 @@ class DQNAgent:
         model = Sequential()
         model.add(InputLayer(shape=(self.state_size,)))
         model.add(BatchNormalization())
-        model.add(Dense(512, activation=tf.keras.activations.LeakyReLU(alpha=0.01)))
-        model.add(Dropout(0.3))
-        model.add(Dense(256, activation=tf.keras.activations.LeakyReLU(alpha=0.01)))
-        model.add(Dropout(0.3))
-        model.add(Dense(128, activation=tf.keras.activations.LeakyReLU(alpha=0.01)))
-        model.add(Dropout(0.2))
-        model.add(Dense(64, activation=tf.keras.activations.LeakyReLU(alpha=0.01)))
-        model.add(Dense(32, activation=tf.keras.activations.LeakyReLU(alpha=0.01)))
+        model.add(Dense(256, activation=tf.keras.layers.LeakyReLU(alpha=0.01)))
+        model.add(Dropout(0.1))
+        model.add(Dense(128, activation=tf.keras.layers.LeakyReLU(alpha=0.01)))
+        model.add(Dropout(0.1))
         model.add(Dense(self.action_size, activation='linear'))
-        
+
         return model
         
     def remember(self, state, action, reward, next_state, done):
@@ -62,14 +60,14 @@ class DQNAgent:
         # Convert tile values to log2 representation (except 0)
         processed_state = np.zeros_like(state, dtype=np.float32)
         for i in range(state.shape[0]):
-                if state[i] > 0:
-                    processed_state[i] = np.log2(state[i])
-        
-        # Normalize values
-        max_val = np.log2(2048)  # Assuming 2048 as max value
-        processed_state = processed_state / max_val
-        
-        # Add channel dimension
+            if state[i] > 0:
+                processed_state[i] = np.log2(state[i])
+
+        # Normalize dynamically so values stay in [0, 1] even past 2048
+        max_log = processed_state.max()
+        if max_log > 0:
+            processed_state = processed_state / max_log
+
         return processed_state
 
     def act(self, state):
@@ -114,19 +112,17 @@ class DQNAgent:
         target = rewards + (1. - dones) * self.gamma * max_next_qs
         with tf.GradientTape() as tape:
             qs = self.main_model(states)
-            action_masks = tf.one_hot(actions, 4)
+            action_masks = tf.one_hot(actions, self.action_size)
             masked_qs = tf.reduce_sum(action_masks * qs, axis=-1)
             loss = self.mse(target, masked_qs)
         grads = tape.gradient(loss, self.main_model.trainable_variables)
+        grads, _ = tf.clip_by_global_norm(grads, 1.0)
         self.optimizer.apply_gradients(zip(grads, self.main_model.trainable_variables))
         return loss
             
     def target_train(self):
         self.target_model.set_weights(self.main_model.get_weights())
         
-    def resetMemory(self):
-        self.memory = deque(maxlen=2000)
-
     def load(self, name):
         self.main_model = load_model(name)
         self.target_model = load_model(name)

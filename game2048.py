@@ -8,6 +8,7 @@ INVALID_MOVE_PENALTY = -5.0  # Scaled penalty for invalid moves
 GAME_OVER_PENALTY = -10.0  # Scaled penalty for game over
 MERGE_REWARD_SCALE = 10000  # Scale factor for merge rewards
 NEW_MAX_SCALE = 5.0  # Scale factor for new max tile bonus
+
 class Game2048:
     def __init__(self):
         self.board = self.init_board()
@@ -88,26 +89,27 @@ class Game2048:
         # Game over penalty
         if done:
             return GAME_OVER_PENALTY
-        
+
         # Invalid move penalty
         if np.array_equal(old_board, new_board):
             return INVALID_MOVE_PENALTY
-        
-        # Base reward: normalized change in board sum
-        sum_change = np.sum(new_board) - np.sum(old_board)
-        normalized_change = sum_change / MAX_EXPECTED_TILE
-        
-        # Bonus for new max tile
+
+        # Merge reward: sum of log2 of each merged tile value.
+        # When two tiles merge into value V, the board sum increases by V (since V/2 + V/2 → V).
+        # A new tile (2 or 4) is also added, so we subtract that to isolate merge contributions.
+        new_tile_value = 2  # Expected value of a newly added tile (90% chance of 2)
+        merge_sum = np.sum(new_board) - np.sum(old_board) - new_tile_value
+        if merge_sum > 0:
+            merge_reward = np.log2(merge_sum + 1)
+        else:
+            merge_reward = 0.0
+
+        # Bonus for achieving a new max tile
+        max_tile_bonus = 0.0
         if new_board.max() > old_board.max():
             max_tile_bonus = NEW_MAX_SCALE * (np.log2(new_board.max()) / np.log2(MAX_EXPECTED_TILE))
-            return normalized_change + max_tile_bonus
-        
-        # Bonus for merging tiles
-        if np.sum(np.where(new_board == 0, 1, 0)) > np.sum(np.where(old_board == 0, 1, 0)):
-            return normalized_change + LAMBDA
-        
-        # Regular merge reward
-        return normalized_change
+
+        return merge_reward + max_tile_bonus
 
     def step(self, action: int) -> tuple[np.ndarray, int, bool]:
         old_board = np.copy(self.board) # Save the old board to check if the board has changed

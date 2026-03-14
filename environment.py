@@ -1,15 +1,16 @@
+import os
+import time
+import sys
+
+import pygame
 import numpy as np
+from tqdm import tqdm
+import  tensorflow as tf
+import matplotlib.pyplot as plt
+
 from game2048 import Game2048
 from RLAgent import DQNAgent
 from gameInterface import gameInterface
-import time
-import sys
-import pygame
-import matplotlib.pyplot as plt
-import time
-from tqdm import tqdm
-import os
-import  tensorflow as tf
 
 # Use all available CPU cores
 os.environ["OMP_NUM_THREADS"] = str(os.cpu_count())  
@@ -29,7 +30,7 @@ if __name__ == "__main__":
     agent = DQNAgent(state_size, action_size)
     # model = sorted([file for file in os.listdir(os.getcwd()) if file.endswith("h5") ])[-1]
     # agent.load(model)
-    episodes = 3600*3
+    episodes = 2000
     interface = gameInterface(env, draw=False)
     
     clock = pygame.time.Clock() if interface.draw else None
@@ -67,7 +68,7 @@ if __name__ == "__main__":
                 
             step += 1
             
-        scores.append([state.sum(), state.max()])
+        scores.append([env.board.sum(), env.board.max()])
         agent.reduce_epsilon()
         
         # Print summary every 100 episodes

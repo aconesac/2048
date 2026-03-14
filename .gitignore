@@ -8,3 +8,6 @@ env/
 build/
 develop-eggs/
 dist/       
+
+.claude
+CLAUDE.md   
