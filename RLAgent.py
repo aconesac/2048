@@ -10,10 +10,21 @@ torch.set_num_threads(1)  # tiny MLP: extra threads only add overhead and block 
 
 from config import (
     GAMMA, EPSILON_START, EPSILON_MIN, EPSILON_DECAY,
-    LEARNING_RATE, MEMORY_SIZE, REWARD_SCALE, HIDDEN_1, HIDDEN_2, GRAD_CLIP_NORM, TAU,
+    LEARNING_RATE, MEMORY_SIZE, REWARD_SCALE, SYM_TRAIN, SYM_INFER, HIDDEN_1, HIDDEN_2, GRAD_CLIP_NORM, TAU,
 )
 
 MAX_EXP = 16  # tiles up to 2^15 are representable
+
+
+def symmetries(boards: np.ndarray) -> np.ndarray:
+    """All 8 rotations/reflections of flattened boards: (..., 16) -> (8, ..., 16)."""
+    grid = boards.reshape(boards.shape[:-1] + (4, 4))
+    out = []
+    for k in range(4):
+        rot = np.rot90(grid, k, axes=(-2, -1))
+        out.append(rot)
+        out.append(rot[..., ::-1])
+    return np.stack(out).reshape((8,) + boards.shape)
 
 
 class ValueNetwork(nn.Module):
@@ -102,9 +113,13 @@ class AfterstateAgent:
 
     def action_values(self, afters: np.ndarray, gains: np.ndarray) -> np.ndarray:
         """r + gamma * V(after) for each of the 4 candidate afterstates."""
-        exps = torch.from_numpy(self.exponents(afters)).to(self.device)
+        exps = self.exponents(afters)
+        if SYM_INFER:  # the value is invariant to board symmetries: average the 8 views
+            exps = symmetries(exps).reshape(-1, 16)
         with torch.no_grad():
-            v = self.model(self._encode(exps)).cpu().numpy()
+            v = self.model(self._encode(torch.from_numpy(exps).to(self.device))).cpu().numpy()
+        if SYM_INFER:
+            v = v.reshape(8, -1).mean(axis=0)
         return gains / REWARD_SCALE + self.gamma * v
 
     def act(self, afters: np.ndarray, gains: np.ndarray, valid: np.ndarray, greedy: bool = False) -> int:
@@ -121,6 +136,9 @@ class AfterstateAgent:
 
     def train_step(self, batch_size: int) -> float:
         a, r, d, na, nr, nv = self.memory.sample(batch_size)
+        if SYM_TRAIN:  # one random symmetry per batch (values are invariant)
+            k = np.random.randint(8)
+            a, na = symmetries(a)[k], symmetries(na)[k]
         dev = self.device
         a = self._encode(torch.from_numpy(a).to(dev))
         r = torch.from_numpy(r).to(dev)

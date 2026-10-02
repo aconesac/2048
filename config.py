@@ -21,3 +21,7 @@ HIDDEN_2 = 256
 EPISODES = 3000
 TRAINING_FREQ = 4           # env steps between gradient steps
 MIN_REPLAY = 2000
+
+# Board symmetries (8 rotations/reflections leave the value unchanged)
+SYM_TRAIN = True            # augment training batches
+SYM_INFER = True            # average the value over all 8 views when acting
