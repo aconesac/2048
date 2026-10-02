@@ -12,6 +12,7 @@ This project implements a DQN agent trained to master the 2048 puzzle game throu
 - **One-hot board encoding** (16 cells × 16 exponents) instead of a state-dependent normalisation.
 - **Invalid moves are masked**, so no steps are wasted on them.
 - Target network with soft updates, Huber loss, replay buffer (100k), epsilon-greedy exploration (per-episode decay).
+- **Symmetry**: the value of a board equals that of its 8 rotations/reflections, so training batches are randomly symmetrised and the value is averaged over the 8 views when acting.
 - Reward = merge score / 100.
 - Fast game engine with cached row transitions.
 
@@ -43,7 +44,8 @@ Hyperparameters live in `config.py`.
 
 Greedy play, average over 200 games (board sum = sum of the final tiles):
 
-| | Avg board sum | Avg max tile | Games reaching ≥512 |
+| | Avg board sum | Avg max tile | Games reaching ≥2048 |
 |---|---|---|---|
 | Previous DQN (2000 episodes) | 250 | 103 | 0% |
-| Afterstate agent (3000 episodes) | 767 | 386 | 48% |
+| Afterstate agent, no symmetry (3000 episodes) | 767 | 386 | 0% (≥512: 48%) |
+| Afterstate agent + symmetry (3000 episodes) | 2616 | 1530 | 50.5% |
