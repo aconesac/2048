@@ -2,53 +2,42 @@ import os
 import sys
 import time
 
-import pygame
 import numpy as np
 from tqdm import tqdm
-import matplotlib.pyplot as plt
+import matplotlib
 
 from game2048 import Game2048
-from RLAgent import DQNAgent
-from gameInterface import gameInterface
-from config import EPISODES, TRAINING_FREQ, NUM_TRAIN_CYCLES, TARGET_SYNC_FREQ, BATCH_SIZE
+from RLAgent import AfterstateAgent
+from evaluate import evaluate, summary
+from config import EPISODES, TRAINING_FREQ, MIN_REPLAY, BATCH_SIZE
+
+EVAL_EVERY = 500
 
 if __name__ == "__main__":
-    env = Game2048()
-    agent = DQNAgent(env.get_state().shape[0], env.action_space)
+    episodes = int(sys.argv[1]) if len(sys.argv) > 1 else EPISODES
+    agent = AfterstateAgent()
     # agent.load("model-<timestamp>.pt")  # uncomment to resume
 
-    interface = gameInterface(env, draw=False)
+    scores, losses = [], []
+    best_eval, best_state = -1, None
+    date = time.strftime("%Y-%m-%d_%H-%M-%S")
+    os.makedirs("results", exist_ok=True)
 
-    scores, losses, rewards_track = [], [], []
-
-    for episode in tqdm(range(EPISODES), desc="Episodes"):
+    for episode in tqdm(range(episodes), desc="Episodes"):
         env = Game2048()
-        state = env.get_state()
-        done = False
-        step = 0
-
+        afters, gains, valid = env.afterstates()
+        done, step = False, 0
         while not done:
-            if interface.draw:
-                for event in pygame.event.get():
-                    if event.type == pygame.QUIT:
-                        pygame.quit()
-                        sys.exit()
-
-            action = agent.act(state)
-            next_state, reward, done = env.step(action)
-            agent.remember(state, action, reward, next_state, done)
-            state = next_state
-            interface.setEnv(env)
-            rewards_track.append(reward)
-
-            if len(agent.memory) > BATCH_SIZE and step % TRAINING_FREQ == 0:
-                for _ in range(NUM_TRAIN_CYCLES):
-                    loss = agent.train_step(*agent.sample_memory(BATCH_SIZE))
-                    losses.append(loss)
-
-            if step % TARGET_SYNC_FREQ == 0:
-                agent.target_train()
-
+            action = agent.act(afters, gains, valid)
+            after, gain = afters[action], gains[action]
+            _, _, done = env.step(action)
+            if done:
+                afters, gains, valid = np.zeros_like(afters), np.zeros_like(gains), np.zeros_like(valid)
+            else:
+                afters, gains, valid = env.afterstates()
+            agent.remember(after, gain, done, afters, gains, valid)
+            if len(agent.memory) >= MIN_REPLAY and step % TRAINING_FREQ == 0:
+                losses.append(agent.train_step(BATCH_SIZE))
             step += 1
 
         scores.append([env.board.sum(), env.board.max()])
@@ -56,33 +45,22 @@ if __name__ == "__main__":
 
         if (episode + 1) % 100 == 0:
             recent = np.array(scores[-100:])
-            print(
-                f"\n[Episode {episode+1}/{EPISODES}] "
-                f"Avg Score: {recent[:, 0].mean():.1f}, "
-                f"Avg Max Tile: {recent[:, 1].mean():.1f}, "
-                f"Best Max Tile: {recent[:, 1].max():.0f}, "
-                f"Epsilon: {agent.epsilon:.4f}"
-            )
+            print(f"\n[Episode {episode+1}/{episodes}] Avg Score: {recent[:, 0].mean():.1f}, "
+                  f"Avg Max Tile: {recent[:, 1].mean():.1f}, Best Max Tile: {recent[:, 1].max():.0f}, "
+                  f"Epsilon: {agent.epsilon:.3f}", flush=True)
 
-    date = time.strftime("%Y-%m-%d_%H-%M-%S")
-    agent.save(f"model-{date}.pt")
+        if (episode + 1) % EVAL_EVERY == 0:
+            ev = evaluate(agent, 50)
+            print("  greedy eval:", summary(*ev), flush=True)
+            if ev[0].mean() > best_eval:  # keep the best checkpoint
+                best_eval = ev[0].mean()
+                agent.save(f"model-{date}.pt")
 
+    print("Best checkpoint saved to", f"model-{date}.pt")
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
     scores = np.array(scores)
-    os.makedirs("results", exist_ok=True)
-
-    plt.figure()
-    plt.plot(scores, label=["Score", "Max Tile"])
-    plt.legend()
-    plt.savefig(f"results/scores-{date}.png")
-
-    plt.figure()
-    plt.plot(losses)
-    plt.title("Training Loss")
-    plt.savefig(f"results/losses-{date}.png")
-
-    plt.figure()
-    plt.plot(rewards_track)
-    plt.title("Reward per Step")
-    plt.savefig(f"results/rewards-{date}.png")
-
-    pygame.quit()
+    plt.figure(); plt.plot(scores[:, 0], label="Score"); plt.plot(scores[:, 1], label="Max Tile")
+    plt.legend(); plt.savefig(f"results/scores-{date}.png")
+    plt.figure(); plt.plot(losses); plt.title("Training Loss"); plt.savefig(f"results/losses-{date}.png")

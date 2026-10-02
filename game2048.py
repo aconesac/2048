@@ -1,129 +1,106 @@
 import random
 import numpy as np
 
-from config import (
-    LAMBDA, MAX_EXPECTED_TILE, INVALID_MOVE_PENALTY,
-    GAME_OVER_PENALTY, MERGE_REWARD_SCALE, NEW_MAX_SCALE
-)
+from config import GAME_OVER_PENALTY, REWARD_SCALE
+
+# Row transitions are cached: a row is a tuple of 4 tile values, the cache maps it to
+# (row after sliding left, score gained from merges).
+_LEFT_CACHE: dict = {}
+
+
+def _slide_left(row: tuple) -> tuple:
+    cached = _LEFT_CACHE.get(row)
+    if cached is not None:
+        return cached
+    tiles = [v for v in row if v]
+    out, gain, i = [], 0, 0
+    while i < len(tiles):
+        if i + 1 < len(tiles) and tiles[i] == tiles[i + 1]:
+            out.append(tiles[i] * 2)
+            gain += tiles[i] * 2
+            i += 2
+        else:
+            out.append(tiles[i])
+            i += 1
+    out += [0] * (len(row) - len(out))
+    result = (tuple(out), gain)
+    _LEFT_CACHE[row] = result
+    return result
+
 
 class Game2048:
+    """Actions: 0=up, 1=down, 2=left, 3=right."""
+
     def __init__(self):
-        self.board = self.init_board()
+        self.board = np.zeros((4, 4), dtype=int)
         self.action_space = 4
-    
-    def init_board(self):
-        board = np.zeros((4, 4), dtype=int)
-        self.add_new_tile(board)
-        self.add_new_tile(board)
-        return board
+        self.add_new_tile(self.board)
+        self.add_new_tile(self.board)
 
     def add_new_tile(self, board: np.ndarray) -> None:
-        empty_cells = list(zip(*np.where(board == 0)))
-        if empty_cells:
-            row, col = random.choice(empty_cells)
-            board[row, col] = 2 if random.random() < 0.9 else 4
+        empty = np.flatnonzero(board == 0)
+        if empty.size:
+            board.flat[random.choice(empty)] = 2 if random.random() < 0.9 else 4
 
-    def slide_left(self, row: np.ndarray) -> np.ndarray:
-        new_row = [num for num in row if num != 0]
-        for i in range(len(new_row) - 1):
-            if new_row[i] == new_row[i + 1]:
-                new_row[i] *= 2
-                new_row[i + 1] = 0
-        new_row = [num for num in new_row if num != 0]
-        new_row += [0] * (len(row) - len(new_row))
-        return new_row
+    def _move(self, board: np.ndarray, action: int):
+        """Slide without spawning a tile. Returns (new_board, merge_score)."""
+        # Rotate so every move becomes a "slide left".
+        if action == 0:
+            view = board.T
+        elif action == 1:
+            view = board.T[:, ::-1]
+        elif action == 2:
+            view = board
+        else:
+            view = board[:, ::-1]
+        gain = 0
+        rows = []
+        for row in view.tolist():
+            new_row, g = _slide_left(tuple(row))
+            rows.append(new_row)
+            gain += g
+        out = np.array(rows, dtype=int)
+        if action == 0:
+            out = out.T
+        elif action == 1:
+            out = out[:, ::-1].T
+        elif action == 3:
+            out = out[:, ::-1]
+        return out, gain
 
-    def move_left(self, board: np.ndarray) -> np.ndarray:
-        new_board = np.array([self.slide_left(row) for row in board])
-        if not np.array_equal(board, new_board):
-            self.add_new_tile(new_board)
-            return new_board
-        return board  # Return original if no change
+    def valid_moves(self, board: np.ndarray = None) -> np.ndarray:
+        board = self.board if board is None else board
+        return np.array(
+            [not np.array_equal(self._move(board, a)[0], board) for a in range(4)]
+        )
 
-    def move_right(self, board: np.ndarray) -> np.ndarray:
-        new_board = np.array([self.slide_left(row[::-1])[::-1] for row in board])
-        if not np.array_equal(board, new_board):
-            self.add_new_tile(new_board)
-            return new_board
-        return board  # Return original if no change
+    def afterstates(self, board: np.ndarray = None):
+        """For each action: (board after sliding but before the random spawn, merge score, valid)."""
+        board = self.board if board is None else board
+        afters = np.zeros((4, 16), dtype=int)
+        gains = np.zeros(4, dtype=np.float32)
+        valid = np.zeros(4, dtype=bool)
+        for a in range(4):
+            new_board, gain = self._move(board, a)
+            if not np.array_equal(new_board, board):
+                afters[a] = new_board.flatten()
+                gains[a] = gain
+                valid[a] = True
+        return afters, gains, valid
 
-    def move_up(self, board: np.ndarray) -> np.ndarray:
-        new_board = np.array([self.slide_left(row) for row in board.T]).T
-        if not np.array_equal(board, new_board):
-            self.add_new_tile(new_board)
-            return new_board    
-        return board  # Return original if no change
-    
-    def move_down(self, board: np.ndarray) -> np.ndarray:
-        new_board = np.array([self.slide_left(row[::-1])[::-1] for row in board.T]).T
-        if not np.array_equal(board, new_board):
-            self.add_new_tile(new_board)
-            return new_board
-        return board  # Return original if no change
-    
-    def game_over(self, board: np.ndarray):
-        """
-        Check if the game is over by checking if there are any empty cells or if there are any adjacent cells with the same
-        value in the same row or column.    
-        
-        """
-        if np.any(board == 0):
-            return False
-        for row in board:
-            for i in range(len(row) - 1):
-                if row[i] == row[i + 1]:
-                    return False
-        for col in board.T:
-            for i in range(len(col) - 1):
-                if col[i] == col[i + 1]:
-                    return False
-        return True
+    def game_over(self, board: np.ndarray) -> bool:
+        return not self.valid_moves(board).any()
 
     def get_state(self) -> np.ndarray:
         return self.board.flatten()
-    
-    def calculate_reward(self, old_board, new_board, done):
-        # Game over penalty
-        if done:
-            return GAME_OVER_PENALTY
 
-        # Invalid move penalty
-        if np.array_equal(old_board, new_board):
-            return INVALID_MOVE_PENALTY
-
-        # Merge reward: sum of log2 of each merged tile value.
-        # When two tiles merge into value V, the board sum increases by V (since V/2 + V/2 → V).
-        # A new tile (2 or 4) is also added, so we subtract that to isolate merge contributions.
-        new_tile_value = 2  # Expected value of a newly added tile (90% chance of 2)
-        merge_sum = np.sum(new_board) - np.sum(old_board) - new_tile_value
-        if merge_sum > 0:
-            merge_reward = np.log2(merge_sum + 1)
-        else:
-            merge_reward = 0.0
-
-        # Bonus for achieving a new max tile
-        max_tile_bonus = 0.0
-        if new_board.max() > old_board.max():
-            max_tile_bonus = NEW_MAX_SCALE * (np.log2(new_board.max()) / np.log2(MAX_EXPECTED_TILE))
-
-        return merge_reward + max_tile_bonus
-
-    def step(self, action: int) -> tuple[np.ndarray, int, bool]:
-        old_board = np.copy(self.board) # Save the old board to check if the board has changed
-        
-        # Perform the action update the board
-        if action == 0:
-            self.board = self.move_up(self.board)
-        elif action == 1:
-            self.board = self.move_down(self.board)
-        elif action == 2:
-            self.board = self.move_left(self.board)
-        elif action == 3:
-            self.board = self.move_right(self.board)
-            
+    def step(self, action: int) -> tuple[np.ndarray, float, bool]:
+        new_board, gain = self._move(self.board, action)
+        if np.array_equal(new_board, self.board):
+            # Invalid move: board unchanged, no reward, game continues.
+            return self.get_state(), 0.0, False
+        self.board = new_board
+        self.add_new_tile(self.board)
         done = self.game_over(self.board)
-        
-        reward = self.calculate_reward(old_board, self.board, done)
-            
-        
+        reward = gain / REWARD_SCALE + (GAME_OVER_PENALTY if done else 0.0)
         return self.get_state(), reward, done
