@@ -24,6 +24,7 @@ This project implements a DQN agent trained to master the 2048 puzzle game throu
 ├── game2048.py      # Game logic
 ├── config.py        # Hyperparameters
 ├── train.py         # Training loop (python train.py [episodes])
+├── watch.py         # Watch the agent play in a pygame window
 ├── evaluate.py      # Greedy evaluation (python evaluate.py model.pt)
 ├── gameInterface.py # Pygame visualization
 └── 2048.py          # Play manually
@@ -35,6 +36,7 @@ This project implements a DQN agent trained to master the 2048 puzzle game throu
 pip install -r requirements.txt
 python train.py 3000        # saves the best checkpoint as model-<timestamp>.pt
 python evaluate.py model-<timestamp>.pt --games 200
+python watch.py model-<timestamp>.pt   # watch the agent play (SPACE pause, UP/DOWN speed, R restart)
 python 2048.py              # play manually with the arrow keys
 ```
 
